@@ -1,0 +1,519 @@
+---
+title: "Source Collection"
+subtitle: Introduction to Text as Data
+author: "Amber Boydstun, Mieke Miner, & Cory Struthers"
+date: "Fall 2025"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    code_folding: show
+    highlight: tango
+    theme: united
+    toc: yes
+    df_print: paged
+--- 
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Dropbox/text-as-data-JUST-CORY-AND-AMBER/modules_2024/data/")
+
+options(width = 120)
+options(scipen = 999)
+```
+
+### Introduction
+
+In today's digital world, so much of the information we need is online---whether it's news articles, social media posts, government reports, or public datasets. But manually copying and pasting data often isn’t practical, especially when dealing with large amounts of text. That’s where data collection techniques like web scraping and APIs come in. These tools let us automatically gather and structure text data from different sources, making it easier to analyze and uncover insights.
+
+In this module, we’ll dive into different ways to collect text data using R. We'll start by learning how to use APIs to access structured data from platforms like news sites and online databases. Then we will explore some web scraping techniques, where we pull information directly from websites.
+
+To put these skills into practice, we'll work with real-world data, including online articles from NYT and BBC, as well as Wikipedia and a government report. Along the way, we’ll clean and preprocess the data, getting it ready for text analysis—like sentiment analysis and keyword extraction. By the end of this module, you'll have a solid foundation in data collection methods that will help you automate and scale your research!
+
+
+
+In this module, we'll need the following packages:
+
+``` {r, results = 'hide', message = FALSE, warning= FALSE}
+
+# Load packages
+library(httr)
+library(jsonlite)
+library(tesseract)
+library(readtext)
+library(rvest)
+library(tidyverse)
+library(purrr)
+library(lubridate)
+library(tidytext)
+library(polite)
+require(RCurl)
+require(XML)
+library(wordcloud)
+library(syuzhet)
+library(textdata)
+library(stringr)
+library(scales)
+
+
+# Set working directory
+setwd("~/Dropbox/text-as-data-JUST-CORY-AND-AMBER/modules_2024/data/")
+
+```
+
+#### What is an API?
+
+An **Application Programming Interface (API)** allows computers to request data from web services in a structured format. Many websites provide APIs to access their data programmatically.
+
+### Example: Using the **New York Times Archive API**
+
+To use the **NYT API**, follow these steps:
+
+1. Sign up at the [NYT Developer Network](https://developer.nytimes.com/)
+2. Get an API key
+
+**Note:** We are using Amber's API key for this example but you should sign up for your own NYT developer account and create your own API key for your work!!
+
+
+```{r, message = FALSE, warning= FALSE}
+# Enter YOUR api key here
+NYTAuth<-"Y92TLQV75VhFxPqKhtjceAGKRhRrFUdb"
+
+# Or pop up to enter api key
+#NYTAuth <- rstudioapi::askForPassword("Authorization Key")
+
+# Set the date (year & month) that we want to access data for
+year <- "2025"
+month <- "1"
+
+# Gives all the information for the pull request
+baseurl <- paste0("https://api.nytimes.com/svc/archive/v1/", year, "/", month, ".json?api-key=", NYTAuth, sep="")
+
+```
+
+The query1$response contains a list of two elements: one for the metadata, and one for the docs (i.e., the archive of NYT articles). 
+
+The dataframe contains 20 variables relevant to the archived article---things like the abstract, the headline, the publication date, word count, a snippet and lead paragraph from each article (but not the full body of the text).
+
+```{r, message = FALSE, warning= FALSE}
+
+# Actually pull all the data specified above into a list
+query1 <- fromJSON(baseurl)
+
+# Create empty dataframe with all the variable headers we want
+df <- data.frame(year = integer(),
+                 month = integer(),
+                 abstract = character(),
+                 web_url = character(),
+                 snippet = character(),
+                 lead_paragraph = character(),
+                 print_section = character(),
+                 print_page = character(),
+                 source = character(),
+                 pub_date = character(),
+                 headline = character())
+
+# Pull the information from inside our query
+df_query <- query1$response$docs
+  
+# Turn this information into a dataframe
+df_temp <- data.frame(year = year,
+                 month = month,
+                 abstract = df_query$abstract,
+                 web_url = df_query$web_url,
+                 snippet = df_query$snippet,
+                 lead_paragraph = df_query$lead_paragraph,
+                 print_section = df_query$print_section,
+                 print_page = df_query$print_page,
+                 source = df_query$source,
+                 pub_date = df_query$pub_date,
+                 headline = df_query$headline)
+  
+# Link our queried dataframe with our pretty variable headings
+df <- rbind(df, df_temp)
+
+# Convert publication date to Date format
+df$pub_date <- as.Date(df$pub_date)
+
+```
+
+Let's explore our data!
+
+```{r, message = FALSE, warning= FALSE}
+
+# Count articles per day
+daily_counts <- df %>%
+    group_by(pub_date) %>%
+    summarise(count = n())
+
+# Plot articles over time
+ggplot(daily_counts, aes(x = pub_date, y = count)) +
+    geom_line(color = "red", linewidth = 1) +
+    geom_point(color = "black") +
+    labs(title = "Publication Trend Over Time (January 2025)", x = "Date", y = "Number of Articles") +
+    theme_minimal()
+```
+
+```{r, message = FALSE, warning= FALSE}
+
+# Most common words in headlines (note: drawing on tidytext package for demonstration)
+word_counts <- df %>%
+    unnest_tokens(word, headline.main) %>%
+    anti_join(stop_words) %>%
+    count(word, sort = TRUE)
+```
+
+```{r, message = FALSE, warning= FALSE}
+
+# Plot top 10 most common words
+ggplot(head(word_counts, 10), aes(x = reorder(word, n), y = n)) +
+    geom_bar(stat = "identity", fill = "darkgreen") +
+    coord_flip() +
+    labs(title = "Top 10 Most Common Words in Headlines", x = "Word", y = "Count") +
+    theme_minimal()
+```
+
+### Example using the **NYT Article Search API**
+
+We can use the NYT API data to look at coverage of Donald Trump during the 2024 election.
+
+```{r, message = FALSE, warning= FALSE}
+
+NYTAuth<-"Y92TLQV75VhFxPqKhtjceAGKRhRrFUdb"
+
+term <- "Trump"
+begin_date <- "20241101"
+end_date <- "20241109"
+
+baseurl <- paste0("http://api.nytimes.com/svc/archive/v1/2024/11.json?q=",term,
+                  "&begin_date=",begin_date,"&end_date=",end_date,
+                  "&facet_filter=true&api-key=",NYTAuth,sep="")
+
+initialQuery <- fromJSON(baseurl)
+maxPages <- round((initialQuery$response$meta$hits[1] / 10)-1) 
+maxPages = ifelse(maxPages >= 10, 10, maxPages)
+
+pages <- vector("list",length=maxPages)
+
+# Note: Blocking function to process website, but you can run the code to see it at work (just remove hashtags)
+
+# for(i in 0:maxPages){
+#    nytSearch <- fromJSON(paste0(baseurl, "&page=", i), flatten = TRUE) %>% data.frame() 
+#    pages[[i+1]] <- nytSearch 
+#    Sys.sleep(10)
+# }
+
+# Pull together all the results from the loop above
+# trump_articles <- rbind_pages(pages)
+
+# Only keep news items (not videos, op-ed, etc)
+# trump_articles<-trump_articles%>%filter(response.docs.type_of_material=="News")
+
+# Save Trump articles
+# saveRDS(trump_articles, "trump_articles_nyt.RDS")
+
+```
+
+
+Let's plot Trump mentions over time (by day).
+
+```{r, message = FALSE, warning= FALSE}
+
+# read Trump data
+trump_articles = readRDS("trump_articles_nyt.RDS")
+
+trump_articles<-trump_articles%>%mutate(date_string = str_extract(response.docs.pub_date, "[0-9]+\\-[0-9]+\\-[0-9]+"), date_date = ymd(date_string))
+
+trump_daily<-trump_articles%>%group_by(date_date)%>%summarise(trump_count=n())
+
+
+trump_daily %>% ggplot(aes(x= date_date, y = trump_count)) + 
+                geom_point() + 
+                geom_smooth(method = 'loess', formula = 'y ~ x')
+
+```
+
+We can also do some initial text analysis of the data.
+
+```{r, message = FALSE, warning= FALSE}
+
+text_data <- trump_articles %>%
+  unite("text", response.docs.headline.main, response.docs.abstract, response.docs.lead_paragraph, sep = " ")
+
+text_data <- tibble(text = text_data$text)
+
+tidy_text <- text_data %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words)
+```
+
+Find Common Words Associated with "Trump"
+
+```{r, message = FALSE, warning= FALSE}
+
+# Count word co-occurrences
+word_counts <- tidy_text %>%
+  count(word, sort = TRUE)
+
+# Display most common words
+head(word_counts, 20)
+```
+
+Create word cloud
+```{r, message = FALSE, warning= FALSE}
+
+wordcloud(tidy_text$word, max.words = 100, random.order = FALSE, colors = brewer.pal(8, "Dark2"))
+```
+
+Calculate and plot sentiment (in this case, emotions).
+
+```{r, message = FALSE, warning= FALSE}
+
+text_data$text <- iconv(text_data$text, from = "latin1", to = "UTF-8", sub = "")
+
+# Get sentiment scores
+sentiment_scores <- get_nrc_sentiment(text_data$text)
+
+# Aggregate scores
+sentiment_summary <- sentiment_scores %>%
+  summarise_all(sum) %>%
+  pivot_longer(cols = everything(), names_to = "sentiment", values_to = "count")
+
+# Plot sentiment scores
+ggplot(sentiment_summary, aes(x = reorder(sentiment, -count), y = count, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Sentiment Analysis of NYT Articles on Trump", x = "Sentiment", y = "Count")
+```
+
+Let's look at the words contributing to each sentiment.
+**Note:** this figure highlights some issues with using canned sentiment analysis: President **Trump** versus the verb to **trump**
+
+```{r, message = FALSE, warning= FALSE}
+
+nrc_lexicon <- textdata::lexicon_nrc()
+
+# Load NRC sentiment lexicon
+nrc_lexicon <- get_sentiments("nrc")
+
+# Join words with NRC sentiment categories
+word_sentiments <- tidy_text %>%
+  inner_join(nrc_lexicon, by = "word") %>%
+  count(word, sentiment, sort = TRUE)
+
+# Plot contributions of words to sentiment
+emotions<-word_sentiments%>%filter(n>2000)
+
+ggplot(emotions, aes(x = reorder(word, n), y = n, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Words Contributing to Each Sentiment",
+       x = "Word",
+       y = "Count",
+       fill = "Sentiment")
+```
+
+Let's specifically look at the main words contributing to the negative and positive sentiments
+```{r, message = FALSE, warning= FALSE}
+
+posneg<-word_sentiments%>%filter(sentiment=="positive"|sentiment=="negative")
+posneg<-posneg%>%filter(n>1000)
+
+ggplot(posneg, aes(x = reorder(word, n), y = n, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Words Contributing to Each Sentiment (Positive and Negative)",
+       x = "Word",
+       y = "Count",
+       fill = "Sentiment")
+
+```
+
+
+### What is Web Scraping?
+
+Web scraping is the process of automatically extracting data from web pages.
+
+#### Best Practices:
+- Always check the website’s `robots.txt` file for permissions.
+- Use APIs when available.
+- Scrape responsibly by limiting the frequency of requests.
+
+For example, we can scrape the news page from the BBC.
+
+```{r, message = FALSE, warning= FALSE}
+
+url <- "https://www.bbc.com/news/articles/cd7e38py4geo"
+txt = getURL(url) 
+
+PARSED <- htmlParse(txt)
+#title - h1 tag
+xpathSApply(PARSED, "//h1", xmlValue) 
+#body of article - p1 tag 
+xpathSApply(PARSED, "//p", xmlValue) 
+
+
+```
+
+Another example: We can scrape tables from Wikipedia.
+
+```{r, message = FALSE, warning= FALSE}
+
+us_states <- read_html("https://en.wikipedia.org/wiki/List_of_U.S._states_and_territories_by_population") %>%
+  #extract the first node with class of wikitable
+  html_node(".wikitable") %>% 
+  #convert the HTML table into a data frame
+  html_table(fill = TRUE)
+
+# Rename columns
+names(us_states)<- c('state', 'pop_2024', 'pop_2020', 'change_2010_2020_percent','change_2010_2020','house_seats', 'house_seats_percent', 'pop_per_vote','pop_per_seat', 'percent_US_pop', 'percent_EC')
+
+# Remove first row
+us_states<-us_states[-1,]
+
+#pull out only states
+us_states$state_only <- ifelse(grepl("\\*", us_states$house_seats), 0, 1)
+
+us_states<-us_states%>%filter(state_only==1)
+us_states<-us_states%>%filter(state!="The 50 states")
+
+# Clean and convert data
+us_states_clean <- us_states %>%
+  mutate(
+    change_percent = change_2010_2020_percent %>%
+      str_replace("\u2212", "-") %>%
+      str_remove("%") %>%
+      as.numeric(),
+        change_absolute = change_2010_2020 %>%
+      str_replace("\u2212", "-") %>%
+      str_remove_all(",") %>%
+      as.numeric()
+  )
+
+#plot population change by state
+ggplot(us_states_clean, aes(x = reorder(state, change_absolute), y = change_absolute)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  scale_y_continuous(labels = label_comma()) +  
+  labs(
+    title = "Population Change by State (2010–2020)",
+    x = "State",
+    y = "Population Change") +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y = element_text(size = 5)  
+  )
+```
+
+We can scrape other online tables, too.
+
+```{r, message = FALSE, warning= FALSE}
+
+url <- "http://apps.saferoutesinfo.org/legislation_funding/state_apportionment.cfm"
+
+# Get the data
+funding<-htmlParse(url) 
+
+# Find the table on the page and read it into a list object
+funding<- readHTMLTable(funding,stringsAsFactors = FALSE)
+
+# Flatten data
+funding.df <- do.call("rbind", funding) 
+
+# Fix column names
+colnames(funding.df) <- colnames(funding.df) %>%
+  str_replace_all("[\\n\\t]+", "") %>%
+  str_trim() %>%
+  str_replace_all("Actual ", "Actual_") %>%
+  str_replace_all(" ", "_")
+
+# Clean currency and convert to numeric
+funding_clean <- funding.df %>%
+  mutate(across(everything(), ~str_trim(gsub("[\\n\\t]+", "", .)))) %>%
+  mutate(across(
+    starts_with("Actual_") | starts_with("Total"),
+    ~as.numeric(gsub("[$,]", "", .))
+  ))
+
+#remove Total
+funding_clean<-funding_clean%>%filter(State!="Toal")
+
+
+# Pivot for plotting by year
+funding_long <- funding_clean %>%
+  pivot_longer(cols = starts_with("Actual_"),
+               names_to = "Year",
+               names_prefix = "Actual_",
+               values_to = "Funding")
+
+# Convert year to numeric
+funding_long$Year <- as.numeric(funding_long$Year)
+
+```
+
+Plot top 10 states by total funding
+```{r, message = FALSE, warning= FALSE}
+
+funding_clean %>%
+  arrange(desc(Total)) %>%
+  slice_head(n = 10) %>%
+  ggplot(aes(x = reorder(State, Total), y = Total)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  labs(
+    title = "Top 10 States by Total Safe Routes Funding (2005–2012)",
+    x = "State",
+    y = "Total Funding"
+  ) +
+  theme_minimal()
+```
+
+Plot funding over time for top 5 recipient states
+
+```{r, message = FALSE, warning= FALSE}
+top_states <- funding_clean %>%
+  top_n(5, Total) %>%
+  pull(State)
+
+funding_long %>%
+  filter(State %in% top_states) %>%
+  ggplot(aes(x = Year, y = Funding, color = State)) +
+  geom_line(size = 1) +
+  geom_point() +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  labs(
+    title = "Annual Safe Routes Funding (Top 5 States)",
+    x = "Year",
+    y = "Funding",
+    color = "State"
+  ) +
+  theme_minimal()
+```
+
+
+
+### Reflection
+
+Think about things like:
+
+* **Source bias and selection bias**
+
+For example, the data you get from news sources carries the same biases present in news coverage like political slants, editorial policies, audience preferences, etc. 
+
+Another example, if you are using social media data - you have to think about who (what population/segment of the population) is producing that data. Are Twitter users representative of the general population?
+
+* **Contextual differences in language**
+
+The use of language can differ by platform (think language used in news vs congressional speeches vs Twitter). Language can also evolve over time, making it difficult to correctly capture things like slang, sarcasm, or context-dependent terms (case in point is the word trump which in the above off-the-shelf dictionary approach to our sentiment analysis on news coverage of Trump treated the word trump as the verb rather than the Donald.
+
+* **Missing data and ethics in data access**
+
+If we can only conduct our research using the available data then what data we can actually access can have big implications for our findings and how correct/generalizable they are. Restrictions/limitations on data availability (eg API paywalls, platform controls over access) can distort our findings. Also if certain data is censored/removed by moderation algorithms, then this can create an artificial representation of actual discourse. 
+
+Example: Twitter's API restriction imposed in 2023 had big consequences for researchers studying things like public opinion, misinformation, hate speech, etc. Moreover, the pricetag on access to the Twitter API is HUGE which has ethical concerns like reinforcing/exacerbating inequalities in knowledge production, restricting reproducibility  in research, etc, etc.
+
+\
